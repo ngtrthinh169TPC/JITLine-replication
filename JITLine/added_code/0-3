@@ -1,0 +1,6 @@
+instance = self . create _ instance _ obj ( self . context )
+if instance _ name = = instance [ ' name ' ] :
+vnc _ dict = conn . get _ vnc _ console ( self . context , instance )
+instance = self . create _ instance _ obj ( self . context )
+if instance _ name = = instance [ ' name ' ] :
+conn . get _ vnc _ console , self . context , instance )

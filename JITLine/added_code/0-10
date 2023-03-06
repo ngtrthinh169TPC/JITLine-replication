@@ -1,0 +1,2 @@
+def get _ vnc _ console ( self , context , instance ) :
+def get _ vnc _ console ( self , context , instance ) :

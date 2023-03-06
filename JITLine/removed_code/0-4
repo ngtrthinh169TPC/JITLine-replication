@@ -1,0 +1,4 @@
+def _ get _ running _ instance ( self ) :
+instance _ ref = test _ utils . get _ test _ instance ( )
+instance _ ref , network _ info = self . _ get _ running _ instance ( )
+vnc _ console = self . connection . get _ vnc _ console ( instance _ ref )

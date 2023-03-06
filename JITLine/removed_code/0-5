@@ -1,0 +1,1 @@
+vnc _ dict = self . conn . get _ vnc _ console ( self . instance )

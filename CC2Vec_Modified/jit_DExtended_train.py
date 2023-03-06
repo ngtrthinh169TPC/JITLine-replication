@@ -23,8 +23,8 @@ def train_model(data, params):
         params.class_num = 1
     else:
         params.class_num = data_labels.shape[1]
-    params.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # uncomment to use GPU
-    # params.device = 'cpu'     # uncomment to use CPU
+    # params.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # uncomment to use GPU
+    params.device = 'cpu'     # uncomment to use CPU
     # create and train the defect model
     model = DeepJITExtended(args=params)
     # if torch.cuda.is_available() and params.device != 'cpu':

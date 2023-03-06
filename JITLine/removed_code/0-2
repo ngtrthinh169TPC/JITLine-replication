@@ -1,0 +1,4 @@
+def _ get _ running _ instance ( self ) :
+instance _ ref = utils . get _ test _ instance ( )
+self . connection . spawn ( self . ctxt , instance _ ref , image _ info ,
+[ ] , ' herp ' , network _ info = network _ info )

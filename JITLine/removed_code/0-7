@@ -1,0 +1,2 @@
+def get _ vnc _ console ( self , instance ) :
+# TODO ( Vek ) : Need to pass context in for access to auth _ token

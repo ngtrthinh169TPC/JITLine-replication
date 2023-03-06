@@ -1,0 +1,6 @@
+instance _ ref = db . instance _ create ( self . context , self . test _ instance )
+if instance _ name = = instance _ ref [ ' name ' ] :
+vnc _ dict = conn . get _ vnc _ console ( instance _ ref )
+instance _ ref = db . instance _ create ( self . context , self . test _ instance )
+if instance _ name = = instance _ ref [ ' name ' ] :
+conn . get _ vnc _ console , instance _ ref )

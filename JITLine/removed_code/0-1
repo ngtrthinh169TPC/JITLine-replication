@@ -1,0 +1,22 @@
+instance = jsonutils . to _ primitive ( self . _ create _ fake _ instance ( ) )
+self . compute . run _ instance ( self . context , instance , { } , { } , [ ] , None ,
+None , True , None , False )
+self . compute . terminate _ instance ( self . context ,
+self . _ objectify ( instance ) , [ ] , [ ] )
+instance = jsonutils . to _ primitive ( self . _ create _ fake _ instance ( ) )
+self . compute . run _ instance ( self . context , instance , { } , { } , [ ] , None ,
+None , True , None , False )
+self . compute . terminate _ instance ( self . context ,
+self . _ objectify ( instance ) , [ ] , [ ] )
+instance = jsonutils . to _ primitive ( self . _ create _ fake _ instance ( ) )
+self . compute . run _ instance ( self . context , instance , { } , { } , [ ] , None ,
+None , True , None , False )
+self . compute . terminate _ instance ( self . context ,
+self . _ objectify ( instance ) , [ ] , [ ] )
+instance = jsonutils . to _ primitive ( self . _ create _ fake _ instance ( ) )
+self . compute . run _ instance ( self . context , instance , { } , { } , [ ] , None ,
+None , True , None , False )
+self . compute . terminate _ instance ( self . context ,
+self . _ objectify ( instance ) , [ ] , [ ] )
+instance = self . _ create _ fake _ instance (
+instance = jsonutils . to _ primitive ( instance )

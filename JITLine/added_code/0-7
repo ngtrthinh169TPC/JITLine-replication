@@ -1,0 +1,5 @@
+def get _ vnc _ console ( self , context , instance ) :
+`` `` `` Get connection info for a vnc console .
+: param context : security context
+: param instance : nova . objects . instance . Instance
+`` `` ``

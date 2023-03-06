@@ -1,0 +1,4 @@
+def _ get _ running _ instance ( self , obj = False ) :
+instance _ ref = test _ utils . get _ test _ instance ( obj = obj )
+instance , network _ info = self . _ get _ running _ instance ( obj = True )
+vnc _ console = self . connection . get _ vnc _ console ( self . ctxt , instance )

@@ -1,0 +1,6 @@
+instance = instance _ obj . Instance . _ from _ db _ object (
+context , instance _ obj . Instance ( ) , instance )
+connect _ info = self . driver . get _ vnc _ console ( context , instance )
+instance = instance _ obj . Instance . _ from _ db _ object (
+ctxt , instance _ obj . Instance ( ) , instance )
+console _ info = self . driver . get _ vnc _ console ( ctxt , instance )

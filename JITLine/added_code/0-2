@@ -1,0 +1,5 @@
+from nova . openstack . common import jsonutils
+def _ get _ running _ instance ( self , obj = False ) :
+instance _ ref = utils . get _ test _ instance ( obj = obj )
+self . connection . spawn ( self . ctxt , jsonutils . to _ primitive ( instance _ ref ) ,
+image _ info , [ ] , ' herp ' , network _ info = network _ info )

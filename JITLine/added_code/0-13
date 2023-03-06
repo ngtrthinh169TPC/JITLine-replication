@@ -1,0 +1,305 @@
+Copyright 2014 IBM Corp .
+
+All Rights Reserved .
+
+Licensed under the Apache License , Version 2 . 0 ( the `` License `` ) ; you may
+not use this file except in compliance with the License . You may obtain
+a copy of the License at
+
+http : / / www . apache . org / licenses / LICENSE - 2 . 0
+
+Unless required by applicable law or agreed to in writing , software
+distributed under the License is distributed on an `` AS IS `` BASIS , WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND , either express or implied . See the
+License for the specific language governing permissions and limitations
+under the License .
+
+@ author : Mohammad Banikazemi , IBM Corp .
+import httplib
+import urllib
+import httplib2
+from keystoneclient . v2 _ 0 import client as keyclient
+from oslo . config import cfg
+from neutron . api . v2 import attributes
+from neutron . openstack . common import log as logging
+from neutron . plugins . ibm . common import config # noqa
+from neutron . plugins . ibm . common import constants
+from neutron . wsgi import Serializer
+LOG = logging . getLogger ( _ _ name _ _ )
+SDNVE _ VERSION = ' 2 . 0 '
+SDNVE _ ACTION _ PREFIX = ' / sdnve '
+SDNVE _ RETRIES = 0
+SDNVE _ RETRIY _ INTERVAL = 1
+SDNVE _ TENANT _ TYPE _ OVERLAY = u ' DOVE '
+SDNVE _ URL = ' https : / / % s : % s % s '
+class RequestHandler ( object ) :
+' ' ' Handles processeing requests to and responses from controller . ' ' '
+def _ _ init _ _ ( self , controller _ ips = None , port = None , ssl = None ,
+base _ url = None , userid = None , password = None ,
+timeout = 10 , formats = None ) :
+' ' ' Initializes the RequestHandler for communication with controller
+Following keyword arguments are used ; if not specified , default
+values are used .
+: param port : Username for authentication .
+: param timeout : Time out for http requests .
+: param userid : User id for accessing controller .
+: param password : Password for accessing the controlelr .
+: param base _ url : The base url for the controller .
+: param controller _ ips : List of controller IP addresses .
+: param formats : Supported formats .
+' ' '
+self . port = port or cfg . CONF . SDNVE . port
+self . timeout = timeout
+self . _ s _ meta = None
+self . connection = None
+self . httpclient = httplib2 . Http (
+disable _ ssl _ certificate _ validation = True )
+self . cookie = None
+userid = userid or cfg . CONF . SDNVE . userid
+password = password or cfg . CONF . SDNVE . password
+if ( userid and password ) :
+self . httpclient . add _ credentials ( userid , password )
+self . base _ url = base _ url or cfg . CONF . SDNVE . base _ url
+self . controller _ ips = controller _ ips or cfg . CONF . SDNVE . controller _ ips
+LOG . info ( _ ( `` The IP addr of available SDN - VE controllers : % s `` ) ,
+self . controller _ ips )
+self . controller _ ip = self . controller _ ips [ 0 ]
+LOG . info ( _ ( `` The SDN - VE controller IP address : % s `` ) ,
+self . controller _ ip )
+self . new _ controller = False
+self . format = formats or cfg . CONF . SDNVE . format
+self . version = SDNVE _ VERSION
+self . action _ prefix = SDNVE _ ACTION _ PREFIX
+self . retries = SDNVE _ RETRIES
+self . retry _ interval = SDNVE _ RETRIY _ INTERVAL
+def serialize ( self , data ) :
+' ' ' Serializes a dictionary with a single key . ' ' '
+if isinstance ( data , dict ) :
+return Serializer ( ) . serialize ( data , self . content _ type ( ) )
+elif data :
+raise TypeError ( _ ( `` unable to serialize object type : ' % s ' `` ) %
+type ( data ) )
+def deserialize ( self , data , status _ code ) :
+' ' ' Deserializes an xml or json string into a dictionary . ' ' '
+# NOTE ( mb ) : Temporary fix for backend controller requirement
+data = data . replace ( `` router _ external `` , `` router : external `` )
+if status _ code = = httplib . NO _ CONTENT :
+return data
+try :
+deserialized _ data = Serializer (
+metadata = self . _ s _ meta ) . deserialize ( data , self . content _ type ( ) )
+deserialized _ data = deserialized _ data [ ' body ' ]
+except Exception :
+deserialized _ data = data
+return deserialized _ data
+def content _ type ( self , format = None ) :
+' ' ' Returns the mime - type for either ' xml ' or ' json ' . ' ' '
+return ' application / % s ' % ( format or self . format )
+def delete ( self , url , body = None , headers = None , params = None ) :
+return self . do _ request ( `` DELETE `` , url , body = body ,
+headers = headers , params = params )
+def get ( self , url , body = None , headers = None , params = None ) :
+return self . do _ request ( `` GET `` , url , body = body ,
+headers = headers , params = params )
+def post ( self , url , body = None , headers = None , params = None ) :
+return self . do _ request ( `` POST `` , url , body = body ,
+headers = headers , params = params )
+def put ( self , url , body = None , headers = None , params = None ) :
+return self . do _ request ( `` PUT `` , url , body = body ,
+headers = headers , params = params )
+def do _ request ( self , method , url , body = None , headers = None ,
+params = None , connection _ type = None ) :
+status _ code = - 1
+replybody _ deserialized = ' '
+if body :
+body = self . serialize ( body )
+self . headers = headers or { ' Content - Type ' : self . content _ type ( ) }
+if self . cookie :
+self . headers [ ' cookie ' ] = self . cookie
+if self . controller _ ip ! = self . controller _ ips [ 0 ] :
+controllers = [ self . controller _ ip ]
+else :
+controllers = [ ]
+controllers . extend ( self . controller _ ips )
+for controller _ ip in controllers :
+serverurl = SDNVE _ URL % ( controller _ ip , self . port , self . base _ url )
+myurl = serverurl + url
+if params and isinstance ( params , dict ) :
+myurl + = ' ? ' + urllib . urlencode ( params , doseq = 1 )
+try :
+LOG . debug ( _ ( `` Sending request to SDN - VE . url : ``
+`` % ( myurl ) s method : % ( method ) s body : ``
+`` % ( body ) s header : % ( header ) s `` ) ,
+{ ' myurl ' : myurl , ' method ' : method ,
+' body ' : body , ' header ' : self . headers } )
+resp , replybody = self . httpclient . request (
+myurl , method = method , body = body , headers = self . headers )
+LOG . debug ( ( `` Response recd from SDN - VE . resp : % ( resp ) s ``
+`` body : % ( body ) s `` ) ,
+{ ' resp ' : resp . status , ' body ' : replybody } )
+status _ code = resp . status
+except Exception as e :
+LOG . error ( _ ( `` Error : Could not reach server : % ( url ) s ``
+`` Exception : % ( excp ) s . `` ) ,
+{ ' url ' : myurl , ' excp ' : e } )
+self . cookie = None
+continue
+if status _ code not in constants . HTTP _ ACCEPTABLE :
+LOG . debug ( _ ( `` Error message : % ( reply ) s - - Status : % ( status ) s `` ) ,
+{ ' reply ' : replybody , ' status ' : status _ code } )
+else :
+LOG . debug ( _ ( `` Received response status : % s `` ) , status _ code )
+if resp . get ( ' set - cookie ' ) :
+self . cookie = resp [ ' set - cookie ' ]
+replybody _ deserialized = self . deserialize (
+replybody ,
+status _ code )
+LOG . debug ( _ ( `` Deserialized body : % s `` ) , replybody _ deserialized )
+if controller _ ip ! = self . controller _ ip :
+# bcast the change of controller
+self . new _ controller = True
+self . controller _ ip = controller _ ip
+return ( status _ code , replybody _ deserialized )
+return ( httplib . REQUEST _ TIMEOUT , ' Could not reach server ( s ) ' )
+class Client ( RequestHandler ) :
+' ' ' Client for SDNVE controller . ' ' '
+def _ _ init _ _ ( self ) :
+' ' ' Initialize a new SDNVE client . ' ' '
+super ( Client , self ) . _ _ init _ _ ( )
+self . keystoneclient = KeystoneClient ( )
+resource _ path = {
+' network ' : `` ln / networks / `` ,
+' subnet ' : `` ln / subnets / `` ,
+' port ' : `` ln / ports / `` ,
+' tenant ' : `` ln / tenants / `` ,
+' router ' : `` ln / routers / `` ,
+' floatingip ' : `` ln / floatingips / `` ,
+}
+def process _ request ( self , body ) :
+' ' ' Processes requests according to requirements of controller . ' ' '
+if self . format = = ' json ' :
+body = dict (
+( k . replace ( ' : ' , ' _ ' ) , v ) for k , v in body . items ( )
+if attributes . is _ attr _ set ( v ) )
+def sdnve _ list ( self , resource , * * params ) :
+' ' ' Fetches a list of resources . ' ' '
+res = self . resource _ path . get ( resource , None )
+if not res :
+LOG . info ( _ ( `` Bad resource for forming a list request `` ) )
+return 0 , ' '
+return self . get ( res , params = params )
+def sdnve _ show ( self , resource , specific , * * params ) :
+' ' ' Fetches information of a certain resource . ' ' '
+res = self . resource _ path . get ( resource , None )
+if not res :
+LOG . info ( _ ( `` Bad resource for forming a show request `` ) )
+return 0 , ' '
+return self . get ( res + specific , params = params )
+def sdnve _ create ( self , resource , body ) :
+' ' ' Creates a new resource . ' ' '
+res = self . resource _ path . get ( resource , None )
+if not res :
+LOG . info ( _ ( `` Bad resource for forming a create request `` ) )
+return 0 , ' '
+self . process _ request ( body )
+status , data = self . post ( res , body = body )
+return ( status , data )
+def sdnve _ update ( self , resource , specific , body = None ) :
+' ' ' Updates a resource . ' ' '
+res = self . resource _ path . get ( resource , None )
+if not res :
+LOG . info ( _ ( `` Bad resource for forming a update request `` ) )
+return 0 , ' '
+self . process _ request ( body )
+return self . put ( res + specific , body = body )
+def sdnve _ delete ( self , resource , specific ) :
+' ' ' Deletes the specified resource . ' ' '
+res = self . resource _ path . get ( resource , None )
+if not res :
+LOG . info ( _ ( `` Bad resource for forming a delete request `` ) )
+return 0 , ' '
+return self . delete ( res + specific )
+def _ tenant _ id _ conversion ( self , osid ) :
+return osid
+def sdnve _ get _ tenant _ byid ( self , os _ tenant _ id ) :
+sdnve _ tenant _ id = self . _ tenant _ id _ conversion ( os _ tenant _ id )
+resp , content = self . sdnve _ show ( ' tenant ' , sdnve _ tenant _ id )
+if resp in constants . HTTP _ ACCEPTABLE :
+tenant _ id = content . get ( ' id ' )
+tenant _ type = content . get ( ' network _ type ' )
+if tenant _ type = = SDNVE _ TENANT _ TYPE _ OVERLAY :
+tenant _ type = constants . TENANT _ TYPE _ OVERLAY
+return tenant _ id , tenant _ type
+return None , None
+def sdnve _ check _ and _ create _ tenant ( self , os _ tenant _ id , network _ type = None ) :
+if not os _ tenant _ id :
+return
+tenant _ id , tenant _ type = self . sdnve _ get _ tenant _ byid ( os _ tenant _ id )
+if tenant _ id :
+if not network _ type :
+return tenant _ id
+if tenant _ type ! = network _ type :
+LOG . info ( _ ( `` Non matching tenant and network types : ``
+`` % ( ttype ) s % ( ntype ) s `` ) ,
+{ ' ttype ' : tenant _ type , ' ntype ' : network _ type } )
+return
+return tenant _ id
+# Have to create a new tenant
+sdnve _ tenant _ id = self . _ tenant _ id _ conversion ( os _ tenant _ id )
+if not network _ type :
+network _ type = self . keystoneclient . get _ tenant _ type ( os _ tenant _ id )
+if network _ type = = constants . TENANT _ TYPE _ OVERLAY :
+network _ type = SDNVE _ TENANT _ TYPE _ OVERLAY
+pinn _ desc = ( `` Created by SDN - VE Neutron Plugin , OS project name = `` +
+self . keystoneclient . get _ tenant _ name ( os _ tenant _ id ) )
+res , content = self . sdnve _ create ( ' tenant ' ,
+{ ' id ' : sdnve _ tenant _ id ,
+' name ' : os _ tenant _ id ,
+' network _ type ' : network _ type ,
+' description ' : pinn _ desc } )
+if res not in constants . HTTP _ ACCEPTABLE :
+return
+return sdnve _ tenant _ id
+def sdnve _ get _ controller ( self ) :
+if self . new _ controller :
+self . new _ controller = False
+return self . controller _ ip
+class KeystoneClient ( object ) :
+def _ _ init _ _ ( self , username = None , tenant _ name = None , password = None ,
+auth _ url = None ) :
+keystone _ conf = cfg . CONF . keystone _ authtoken
+keystone _ auth _ url = ( ' % s : / / % s : % s / v2 . 0 / ' %
+( keystone _ conf . auth _ protocol ,
+keystone _ conf . auth _ host ,
+keystone _ conf . auth _ port ) )
+username = username or keystone _ conf . admin _ user
+tenant _ name = tenant _ name or keystone _ conf . admin _ tenant _ name
+password = password or keystone _ conf . admin _ password
+auth _ url = auth _ url or keystone _ auth _ url
+self . overlay _ signature = cfg . CONF . SDNVE . overlay _ signature
+self . of _ signature = cfg . CONF . SDNVE . of _ signature
+self . default _ tenant _ type = cfg . CONF . SDNVE . default _ tenant _ type
+self . client = keyclient . Client ( username = username ,
+password = password ,
+tenant _ name = tenant _ name ,
+auth _ url = auth _ url )
+def get _ tenant _ byid ( self , id ) :
+try :
+return self . client . tenants . get ( id )
+except Exception :
+LOG . exception ( _ ( `` Did not find tenant : % r `` ) , id )
+def get _ tenant _ type ( self , id ) :
+tenant = self . get _ tenant _ byid ( id )
+if tenant :
+description = tenant . description
+if description :
+if ( description . find ( self . overlay _ signature ) > = 0 ) :
+return constants . TENANT _ TYPE _ OVERLAY
+if ( description . find ( self . of _ signature ) > = 0 ) :
+return constants . TENANT _ TYPE _ OF
+return self . default _ tenant _ type
+def get _ tenant _ name ( self , id ) :
+tenant = self . get _ tenant _ byid ( id )
+if tenant :
+return tenant . name
+return ' not found '

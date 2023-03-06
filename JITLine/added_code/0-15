@@ -1,0 +1,538 @@
+Copyright 2014 IBM Corp .
+
+All Rights Reserved .
+
+Licensed under the Apache License , Version 2 . 0 ( the `` License `` ) ; you may
+not use this file except in compliance with the License . You may obtain
+a copy of the License at
+
+http : / / www . apache . org / licenses / LICENSE - 2 . 0
+
+Unless required by applicable law or agreed to in writing , software
+distributed under the License is distributed on an `` AS IS `` BASIS , WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND , either express or implied . See the
+License for the specific language governing permissions and limitations
+under the License .
+
+@ author : Mohammad Banikazemi , IBM Corp .
+import functools
+from oslo . config import cfg
+from neutron . common import constants as q _ const
+from neutron . common import exceptions as q _ exc
+from neutron . common import rpc as q _ rpc
+from neutron . common import topics
+from neutron . db import agents _ db
+from neutron . db import db _ base _ plugin _ v2
+from neutron . db import external _ net _ db
+from neutron . db import l3 _ gwmode _ db
+from neutron . db import portbindings _ db
+from neutron . extensions import portbindings
+from neutron . openstack . common import excutils
+from neutron . openstack . common import log as logging
+from neutron . openstack . common import rpc
+from neutron . openstack . common . rpc import proxy
+from neutron . plugins . ibm . common import config # noqa
+from neutron . plugins . ibm . common import constants
+from neutron . plugins . ibm . common import exceptions as sdnve _ exc
+from neutron . plugins . ibm import sdnve _ api as sdnve
+from neutron . plugins . ibm import sdnve _ api _ fake as sdnve _ fake
+LOG = logging . getLogger ( _ _ name _ _ )
+class SdnveRpcCallbacks ( ) :
+def _ _ init _ _ ( self , notifier ) :
+self . notifier = notifier # used to notify the agent
+def create _ rpc _ dispatcher ( self ) :
+' ' ' Get the rpc dispatcher for this manager .
+If a manager would like to set an rpc API version , or support more than
+one class as the target of rpc messages , override this method .
+' ' '
+return q _ rpc . PluginRpcDispatcher ( [ self ,
+agents _ db . AgentExtRpcCallback ( ) ] )
+def sdnve _ info ( self , rpc _ context , * * kwargs ) :
+' ' ' Update new information . ' ' '
+info = kwargs . get ( ' info ' )
+# Notify all other listening agents
+self . notifier . info _ update ( rpc _ context , info )
+return info
+class AgentNotifierApi ( proxy . RpcProxy ) :
+' ' ' Agent side of the SDN - VE rpc API . ' ' '
+BASE _ RPC _ API _ VERSION = ' 1 . 0 '
+def _ _ init _ _ ( self , topic ) :
+super ( AgentNotifierApi , self ) . _ _ init _ _ (
+topic = topic , default _ version = self . BASE _ RPC _ API _ VERSION )
+self . topic _ info _ update = topics . get _ topic _ name ( topic ,
+constants . INFO ,
+topics . UPDATE )
+def info _ update ( self , context , info ) :
+self . fanout _ cast ( context ,
+self . make _ msg ( ' info _ update ' ,
+info = info ) ,
+topic = self . topic _ info _ update )
+def _ ha ( func ) :
+' ' ' Supports the high availability feature of the controller . ' ' '
+@ functools . wraps ( func )
+def hawrapper ( self , * args , * * kwargs ) :
+' ' ' This wrapper sets the new controller if necessary
+When a controller is detected to be not responding , and a
+new controller is chosen to be used in its place , this decorator
+makes sure the existing integration bridges are set to point
+to the new controleer by calling the set _ controller method .
+' ' '
+ret _ func = func ( self , * args , * * kwargs )
+self . set _ controller ( args [ 0 ] )
+return ret _ func
+return hawrapper
+class SdnvePluginV2 ( db _ base _ plugin _ v2 . NeutronDbPluginV2 ,
+external _ net _ db . External _ net _ db _ mixin ,
+portbindings _ db . PortBindingMixin ,
+l3 _ gwmode _ db . L3 _ NAT _ db _ mixin ,
+) :
+' ' '
+Implement the Neutron abstractions using SDN - VE SDN Controller .
+' ' '
+_ _ native _ bulk _ support = False
+_ _ native _ pagination _ support = False
+_ _ native _ sorting _ support = False
+supported _ extension _ aliases = [ `` binding `` , `` router `` , `` external - net `` ]
+def _ _ init _ _ ( self , configfile = None ) :
+self . base _ binding _ dict = {
+portbindings . VIF _ TYPE : portbindings . VIF _ TYPE _ OVS ,
+portbindings . VIF _ DETAILS : { portbindings . CAP _ PORT _ FILTER : False } }
+super ( SdnvePluginV2 , self ) . _ _ init _ _ ( )
+self . setup _ rpc ( )
+self . sdnve _ controller _ select ( )
+if self . fake _ controller :
+self . sdnve _ client = sdnve _ fake . FakeClient ( )
+else :
+self . sdnve _ client = sdnve . Client ( )
+def sdnve _ controller _ select ( self ) :
+self . fake _ controller = cfg . CONF . SDNVE . use _ fake _ controller
+def setup _ rpc ( self ) :
+# RPC support
+self . topic = topics . PLUGIN
+self . conn = rpc . create _ connection ( new = True )
+self . notifier = AgentNotifierApi ( topics . AGENT )
+self . callbacks = SdnveRpcCallbacks ( self . notifier )
+self . dispatcher = self . callbacks . create _ rpc _ dispatcher ( )
+self . conn . create _ consumer ( self . topic , self . dispatcher ,
+fanout = False )
+# Consume from all consumers in a thread
+self . conn . consume _ in _ thread ( )
+def _ update _ base _ binding _ dict ( self , tenant _ type ) :
+if tenant _ type = = constants . TENANT _ TYPE _ OVERLAY :
+self . base _ binding _ dict [
+portbindings . VIF _ TYPE ] = portbindings . VIF _ TYPE _ BRIDGE
+if tenant _ type = = constants . TENANT _ TYPE _ OF :
+self . base _ binding _ dict [
+portbindings . VIF _ TYPE ] = portbindings . VIF _ TYPE _ OVS
+def set _ controller ( self , context ) :
+LOG . info ( _ ( `` Set a new controller if needed . `` ) )
+new _ controller = self . sdnve _ client . sdnve _ get _ controller ( )
+if new _ controller :
+self . notifier . info _ update (
+context ,
+{ ' new _ controller ' : new _ controller } )
+LOG . info ( _ ( `` Set the controller to a new controller : % s `` ) ,
+new _ controller )
+def _ process _ request ( self , request , current ) :
+new _ request = dict (
+( k , v ) for k , v in request . items ( )
+if v ! = current . get ( k ) )
+msg = _ ( `` Original SDN - VE HTTP request : % ( orig ) s ; New request : % ( new ) s `` )
+LOG . debug ( msg , { ' orig ' : request , ' new ' : new _ request } )
+return new _ request
+#
+# Network
+#
+@ _ ha
+def create _ network ( self , context , network ) :
+LOG . debug ( _ ( `` Create network in progress : % r `` ) , network )
+session = context . session
+tenant _ id = self . _ get _ tenant _ id _ for _ create ( context , network [ ' network ' ] )
+# Create a new SDN - VE tenant if need be
+sdnve _ tenant = self . sdnve _ client . sdnve _ check _ and _ create _ tenant (
+tenant _ id )
+if sdnve _ tenant is None :
+raise sdnve _ exc . SdnveException (
+msg = _ ( ' Create net failed : no SDN - VE tenant . ' ) )
+with session . begin ( subtransactions = True ) :
+net = super ( SdnvePluginV2 , self ) . create _ network ( context , network )
+self . _ process _ l3 _ create ( context , net , network [ ' network ' ] )
+# Create SDN - VE network
+( res , data ) = self . sdnve _ client . sdnve _ create ( ' network ' , net )
+if res not in constants . HTTP _ ACCEPTABLE :
+super ( SdnvePluginV2 , self ) . delete _ network ( context , net [ ' id ' ] )
+raise sdnve _ exc . SdnveException (
+msg = ( _ ( ' Create net failed in SDN - VE : % s ' ) % res ) )
+LOG . debug ( _ ( `` Created network : % s `` ) , net [ ' id ' ] )
+return net
+@ _ ha
+def update _ network ( self , context , id , network ) :
+LOG . debug ( _ ( `` Update network in progress : % r `` ) , network )
+session = context . session
+processed _ request = { }
+with session . begin ( subtransactions = True ) :
+original _ network = super ( SdnvePluginV2 , self ) . get _ network (
+context , id )
+processed _ request [ ' network ' ] = self . _ process _ request (
+network [ ' network ' ] , original _ network )
+net = super ( SdnvePluginV2 , self ) . update _ network (
+context , id , network )
+self . _ process _ l3 _ update ( context , net , network [ ' network ' ] )
+if processed _ request [ ' network ' ] :
+( res , data ) = self . sdnve _ client . sdnve _ update (
+' network ' , id , processed _ request [ ' network ' ] )
+if res not in constants . HTTP _ ACCEPTABLE :
+net = super ( SdnvePluginV2 , self ) . update _ network (
+context , id , { ' network ' : original _ network } )
+raise sdnve _ exc . SdnveException (
+msg = ( _ ( ' Update net failed in SDN - VE : % s ' ) % res ) )
+return net
+@ _ ha
+def delete _ network ( self , context , id ) :
+LOG . debug ( _ ( `` Delete network in progress : % s `` ) , id )
+super ( SdnvePluginV2 , self ) . delete _ network ( context , id )
+( res , data ) = self . sdnve _ client . sdnve _ delete ( ' network ' , id )
+if res not in constants . HTTP _ ACCEPTABLE :
+LOG . error (
+_ ( `` Delete net failed after deleting the network in DB : % s `` ) ,
+res )
+@ _ ha
+def get _ network ( self , context , id , fields = None ) :
+LOG . debug ( _ ( `` Get network in progress : % s `` ) , id )
+return super ( SdnvePluginV2 , self ) . get _ network ( context , id , fields )
+@ _ ha
+def get _ networks ( self , context , filters = None , fields = None , sorts = None ,
+limit = None , marker = None , page _ reverse = False ) :
+LOG . debug ( _ ( `` Get networks in progress `` ) )
+return super ( SdnvePluginV2 , self ) . get _ networks (
+context , filters , fields , sorts , limit , marker , page _ reverse )
+#
+# Port
+#
+@ _ ha
+def create _ port ( self , context , port ) :
+LOG . debug ( _ ( `` Create port in progress : % r `` ) , port )
+session = context . session
+# Set port status as ' ACTIVE ' to avoid needing the agent
+port [ ' port ' ] [ ' status ' ] = q _ const . PORT _ STATUS _ ACTIVE
+port _ data = port [ ' port ' ]
+with session . begin ( subtransactions = True ) :
+port = super ( SdnvePluginV2 , self ) . create _ port ( context , port )
+if ' id ' not in port :
+return port
+# If the tenant _ id is set to ' ' by create _ port , add the id to
+# the request being sent to the controller as the controller
+# requires a tenant id
+tenant _ id = port . get ( ' tenant _ id ' )
+if not tenant _ id :
+LOG . debug ( _ ( `` Create port does not have tenant id info `` ) )
+original _ network = super ( SdnvePluginV2 , self ) . get _ network (
+context , port [ ' network _ id ' ] )
+original _ tenant _ id = original _ network [ ' tenant _ id ' ]
+port [ ' tenant _ id ' ] = original _ tenant _ id
+LOG . debug (
+_ ( `` Create port does not have tenant id info ; ``
+`` obtained is : % s `` ) ,
+port [ ' tenant _ id ' ] )
+os _ tenant _ id = tenant _ id
+id _ na , tenant _ type = self . sdnve _ client . sdnve _ get _ tenant _ byid (
+os _ tenant _ id )
+self . _ update _ base _ binding _ dict ( tenant _ type )
+self . _ process _ portbindings _ create _ and _ update ( context ,
+port _ data , port )
+# NOTE ( mb ) : Remove this block when controller is updated
+# Remove the information that the controller does not accept
+sdnve _ port = port . copy ( )
+sdnve _ port . pop ( ' device _ id ' , None )
+sdnve _ port . pop ( ' device _ owner ' , None )
+( res , data ) = self . sdnve _ client . sdnve _ create ( ' port ' , sdnve _ port )
+if res not in constants . HTTP _ ACCEPTABLE :
+super ( SdnvePluginV2 , self ) . delete _ port ( context , port [ ' id ' ] )
+raise sdnve _ exc . SdnveException (
+msg = ( _ ( ' Create port failed in SDN - VE : % s ' ) % res ) )
+LOG . debug ( _ ( `` Created port : % s `` ) , port . get ( ' id ' , ' id not found ' ) )
+return port
+@ _ ha
+def update _ port ( self , context , id , port ) :
+LOG . debug ( _ ( `` Update port in progress : % r `` ) , port )
+session = context . session
+processed _ request = { }
+with session . begin ( subtransactions = True ) :
+original _ port = super ( SdnvePluginV2 , self ) . get _ port (
+context , id )
+processed _ request [ ' port ' ] = self . _ process _ request (
+port [ ' port ' ] , original _ port )
+updated _ port = super ( SdnvePluginV2 , self ) . update _ port (
+context , id , port )
+os _ tenant _ id = updated _ port [ ' tenant _ id ' ]
+id _ na , tenant _ type = self . sdnve _ client . sdnve _ get _ tenant _ byid (
+os _ tenant _ id )
+self . _ update _ base _ binding _ dict ( tenant _ type )
+self . _ process _ portbindings _ create _ and _ update ( context ,
+port [ ' port ' ] ,
+updated _ port )
+if processed _ request [ ' port ' ] :
+( res , data ) = self . sdnve _ client . sdnve _ update (
+' port ' , id , processed _ request [ ' port ' ] )
+if res not in constants . HTTP _ ACCEPTABLE :
+updated _ port = super ( SdnvePluginV2 , self ) . update _ port (
+context , id , { ' port ' : original _ port } )
+raise sdnve _ exc . SdnveException (
+msg = ( _ ( ' Update port failed in SDN - VE : % s ' ) % res ) )
+return updated _ port
+@ _ ha
+def delete _ port ( self , context , id , l3 _ port _ check = True ) :
+LOG . debug ( _ ( `` Delete port in progress : % s `` ) , id )
+# if needed , check to see if this is a port owned by
+# an l3 - router . If so , we should prevent deletion .
+if l3 _ port _ check :
+self . prevent _ l3 _ port _ deletion ( context , id )
+self . disassociate _ floatingips ( context , id )
+super ( SdnvePluginV2 , self ) . delete _ port ( context , id )
+( res , data ) = self . sdnve _ client . sdnve _ delete ( ' port ' , id )
+if res not in constants . HTTP _ ACCEPTABLE :
+LOG . error (
+_ ( `` Delete port operation failed in SDN - VE ``
+`` after deleting the port from DB : % s `` ) , res )
+#
+# Subnet
+#
+@ _ ha
+def create _ subnet ( self , context , subnet ) :
+LOG . debug ( _ ( `` Create subnet in progress : % r `` ) , subnet )
+new _ subnet = super ( SdnvePluginV2 , self ) . create _ subnet ( context , subnet )
+# Note ( mb ) : Use of null string currently required by controller
+sdnve _ subnet = new _ subnet . copy ( )
+if subnet . get ( ' gateway _ ip ' ) is None :
+sdnve _ subnet [ ' gateway _ ip ' ] = ' null '
+( res , data ) = self . sdnve _ client . sdnve _ create ( ' subnet ' , sdnve _ subnet )
+if res not in constants . HTTP _ ACCEPTABLE :
+super ( SdnvePluginV2 , self ) . delete _ subnet ( context ,
+new _ subnet [ ' id ' ] )
+raise sdnve _ exc . SdnveException (
+msg = ( _ ( ' Create subnet failed in SDN - VE : % s ' ) % res ) )
+LOG . debug ( _ ( `` Subnet created : % s `` ) , new _ subnet [ ' id ' ] )
+return new _ subnet
+@ _ ha
+def update _ subnet ( self , context , id , subnet ) :
+LOG . debug ( _ ( `` Update subnet in progress : % r `` ) , subnet )
+session = context . session
+processed _ request = { }
+with session . begin ( subtransactions = True ) :
+original _ subnet = super ( SdnvePluginV2 , self ) . get _ subnet (
+context , id )
+processed _ request [ ' subnet ' ] = self . _ process _ request (
+subnet [ ' subnet ' ] , original _ subnet )
+updated _ subnet = super ( SdnvePluginV2 , self ) . update _ subnet (
+context , id , subnet )
+if processed _ request [ ' subnet ' ] :
+# Note ( mb ) : Use of string containing null required by controller
+if ' gateway _ ip ' in processed _ request [ ' subnet ' ] :
+if processed _ request [ ' subnet ' ] . get ( ' gateway _ ip ' ) is None :
+processed _ request [ ' subnet ' ] [ ' gateway _ ip ' ] = ' null '
+( res , data ) = self . sdnve _ client . sdnve _ update (
+' subnet ' , id , processed _ request [ ' subnet ' ] )
+if res not in constants . HTTP _ ACCEPTABLE :
+for key in subnet [ ' subnet ' ] . keys ( ) :
+subnet [ ' subnet ' ] [ key ] = original _ subnet [ key ]
+super ( SdnvePluginV2 , self ) . update _ subnet (
+context , id , subnet )
+raise sdnve _ exc . SdnveException (
+msg = ( _ ( ' Update subnet failed in SDN - VE : % s ' ) % res ) )
+return updated _ subnet
+@ _ ha
+def delete _ subnet ( self , context , id ) :
+LOG . debug ( _ ( `` Delete subnet in progress : % s `` ) , id )
+super ( SdnvePluginV2 , self ) . delete _ subnet ( context , id )
+( res , data ) = self . sdnve _ client . sdnve _ delete ( ' subnet ' , id )
+if res not in constants . HTTP _ ACCEPTABLE :
+LOG . error ( _ ( `` Delete subnet operation failed in SDN - VE after ``
+`` deleting the subnet from DB : % s `` ) , res )
+#
+# Router
+#
+@ _ ha
+def create _ router ( self , context , router ) :
+LOG . debug ( _ ( `` Create router in progress : % r `` ) , router )
+if router [ ' router ' ] [ ' admin _ state _ up ' ] is False :
+LOG . warning ( _ ( ' Ignoring admin _ state _ up = False for router = % r . '
+' Overriding with True ' ) , router )
+router [ ' router ' ] [ ' admin _ state _ up ' ] = True
+tenant _ id = self . _ get _ tenant _ id _ for _ create ( context , router [ ' router ' ] )
+# Create a new Pinnaacles tenant if need be
+sdnve _ tenant = self . sdnve _ client . sdnve _ check _ and _ create _ tenant (
+tenant _ id )
+if sdnve _ tenant is None :
+raise sdnve _ exc . SdnveException (
+msg = _ ( ' Create router failed : no SDN - VE tenant . ' ) )
+new _ router = super ( SdnvePluginV2 , self ) . create _ router ( context , router )
+# Create Sdnve router
+( res , data ) = self . sdnve _ client . sdnve _ create ( ' router ' , new _ router )
+if res not in constants . HTTP _ ACCEPTABLE :
+super ( SdnvePluginV2 , self ) . delete _ router ( context , new _ router [ ' id ' ] )
+raise sdnve _ exc . SdnveException (
+msg = ( _ ( ' Create router failed in SDN - VE : % s ' ) % res ) )
+LOG . debug ( _ ( `` Router created : % r `` ) , new _ router )
+return new _ router
+@ _ ha
+def update _ router ( self , context , id , router ) :
+LOG . debug ( _ ( `` Update router in progress : id = % ( id ) s ``
+`` router = % ( router ) r `` ) ,
+{ ' id ' : id , ' router ' : router } )
+session = context . session
+processed _ request = { }
+if not router [ ' router ' ] . get ( ' admin _ state _ up ' , True ) :
+raise q _ exc . NotImplementedError ( _ ( ' admin _ state _ up = False '
+' routers are not '
+' supported . ' ) )
+with session . begin ( subtransactions = True ) :
+original _ router = super ( SdnvePluginV2 , self ) . get _ router (
+context , id )
+processed _ request [ ' router ' ] = self . _ process _ request (
+router [ ' router ' ] , original _ router )
+updated _ router = super ( SdnvePluginV2 , self ) . update _ router (
+context , id , router )
+if processed _ request [ ' router ' ] :
+( res , data ) = self . sdnve _ client . sdnve _ update (
+' router ' , id , processed _ request [ ' router ' ] )
+if res not in constants . HTTP _ ACCEPTABLE :
+super ( SdnvePluginV2 , self ) . update _ router (
+context , id , { ' router ' : original _ router } )
+raise sdnve _ exc . SdnveException (
+msg = ( _ ( ' Update router failed in SDN - VE : % s ' ) % res ) )
+return updated _ router
+@ _ ha
+def delete _ router ( self , context , id ) :
+LOG . debug ( _ ( `` Delete router in progress : % s `` ) , id )
+super ( SdnvePluginV2 , self ) . delete _ router ( context , id )
+( res , data ) = self . sdnve _ client . sdnve _ delete ( ' router ' , id )
+if res not in constants . HTTP _ ACCEPTABLE :
+LOG . error (
+_ ( `` Delete router operation failed in SDN - VE after ``
+`` deleting the router in DB : % s `` ) , res )
+@ _ ha
+def add _ router _ interface ( self , context , router _ id , interface _ info ) :
+LOG . debug ( _ ( `` Add router interface in progress : ``
+`` router _ id = % ( router _ id ) s ``
+`` interface _ info = % ( interface _ info ) r `` ) ,
+{ ' router _ id ' : router _ id , ' interface _ info ' : interface _ info } )
+new _ interface = super ( SdnvePluginV2 , self ) . add _ router _ interface (
+context , router _ id , interface _ info )
+LOG . debug (
+_ ( `` SdnvePluginV2 . add _ router _ interface called . Port info : % s `` ) ,
+new _ interface )
+request _ info = interface _ info . copy ( )
+request _ info [ ' port _ id ' ] = new _ interface [ ' port _ id ' ]
+# Add the subnet _ id to the request sent to the controller
+if ' subnet _ id ' not in interface _ info :
+request _ info [ ' subnet _ id ' ] = new _ interface [ ' subnet _ id ' ]
+( res , data ) = self . sdnve _ client . sdnve _ update (
+' router ' , router _ id + ' / add _ router _ interface ' , request _ info )
+if res not in constants . HTTP _ ACCEPTABLE :
+super ( SdnvePluginV2 , self ) . remove _ router _ interface (
+context , router _ id , interface _ info )
+raise sdnve _ exc . SdnveException (
+msg = ( _ ( ' Update router - add - interface failed in SDN - VE : % s ' ) %
+res ) )
+LOG . debug ( _ ( `` Added router interface : % r `` ) , new _ interface )
+return new _ interface
+def _ add _ router _ interface _ only ( self , context , router _ id , interface _ info ) :
+LOG . debug ( _ ( `` Add router interface only called : ``
+`` router _ id = % ( router _ id ) s ``
+`` interface _ info = % ( interface _ info ) r `` ) ,
+{ ' router _ id ' : router _ id , ' interface _ info ' : interface _ info } )
+port _ id = interface _ info . get ( ' port _ id ' )
+if port _ id :
+( res , data ) = self . sdnve _ client . sdnve _ update (
+' router ' , router _ id + ' / add _ router _ interface ' , interface _ info )
+if res not in constants . HTTP _ ACCEPTABLE :
+LOG . error ( _ ( `` SdnvePluginV2 . _ add _ router _ interface _ only : ``
+`` failed to add the interface in the roll back . ``
+`` of a remove _ router _ interface operation `` ) )
+@ _ ha
+def remove _ router _ interface ( self , context , router _ id , interface _ info ) :
+LOG . debug ( _ ( `` Remove router interface in progress : ``
+`` router _ id = % ( router _ id ) s ``
+`` interface _ info = % ( interface _ info ) r `` ) ,
+{ ' router _ id ' : router _ id , ' interface _ info ' : interface _ info } )
+subnet _ id = interface _ info . get ( ' subnet _ id ' )
+if not subnet _ id :
+portid = interface _ info . get ( ' port _ id ' )
+if not portid :
+raise sdnve _ exc . BadInputException ( msg = _ ( ' No port ID ' ) )
+myport = super ( SdnvePluginV2 , self ) . get _ port ( context , portid )
+LOG . debug ( _ ( `` SdnvePluginV2 . remove _ router _ interface port : % s `` ) ,
+myport )
+myfixed _ ips = myport . get ( ' fixed _ ips ' )
+if not myfixed _ ips :
+raise sdnve _ exc . BadInputException ( msg = _ ( ' No fixed IP ' ) )
+subnet _ id = myfixed _ ips [ 0 ] . get ( ' subnet _ id ' )
+if subnet _ id :
+interface _ info [ ' subnet _ id ' ] = subnet _ id
+LOG . debug (
+_ ( `` SdnvePluginV2 . remove _ router _ interface subnet _ id : % s `` ) ,
+subnet _ id )
+( res , data ) = self . sdnve _ client . sdnve _ update (
+' router ' , router _ id + ' / remove _ router _ interface ' , interface _ info )
+if res not in constants . HTTP _ ACCEPTABLE :
+raise sdnve _ exc . SdnveException (
+msg = ( _ ( ' Update router - remove - interface failed SDN - VE : % s ' ) %
+res ) )
+session = context . session
+with session . begin ( subtransactions = True ) :
+try :
+info = super ( SdnvePluginV2 , self ) . remove _ router _ interface (
+context , router _ id , interface _ info )
+except Exception :
+with excutils . save _ and _ reraise _ exception ( ) :
+self . _ add _ router _ interface _ only ( context ,
+router _ id , interface _ info )
+return info
+#
+# Floating Ip
+#
+@ _ ha
+def create _ floatingip ( self , context , floatingip ) :
+LOG . debug ( _ ( `` Create floatingip in progress : % r `` ) ,
+floatingip )
+new _ floatingip = super ( SdnvePluginV2 , self ) . create _ floatingip (
+context , floatingip )
+( res , data ) = self . sdnve _ client . sdnve _ create (
+' floatingip ' , { ' floatingip ' : new _ floatingip } )
+if res not in constants . HTTP _ ACCEPTABLE :
+super ( SdnvePluginV2 , self ) . delete _ floatingip (
+context , new _ floatingip [ ' id ' ] )
+raise sdnve _ exc . SdnveException (
+msg = ( _ ( ' Creating floating ip operation failed '
+' in SDN - VE controller : % s ' ) % res ) )
+LOG . debug ( _ ( `` Created floatingip : % r `` ) , new _ floatingip )
+return new _ floatingip
+@ _ ha
+def update _ floatingip ( self , context , id , floatingip ) :
+LOG . debug ( _ ( `` Update floatingip in progress : % r `` ) , floatingip )
+session = context . session
+processed _ request = { }
+with session . begin ( subtransactions = True ) :
+original _ floatingip = super (
+SdnvePluginV2 , self ) . get _ floatingip ( context , id )
+processed _ request [ ' floatingip ' ] = self . _ process _ request (
+floatingip [ ' floatingip ' ] , original _ floatingip )
+updated _ floatingip = super (
+SdnvePluginV2 , self ) . update _ floatingip ( context , id , floatingip )
+if processed _ request [ ' floatingip ' ] :
+( res , data ) = self . sdnve _ client . sdnve _ update (
+' floatingip ' , id ,
+{ ' floatingip ' : processed _ request [ ' floatingip ' ] } )
+if res not in constants . HTTP _ ACCEPTABLE :
+super ( SdnvePluginV2 , self ) . update _ floatingip (
+context , id , { ' floatingip ' : original _ floatingip } )
+raise sdnve _ exc . SdnveException (
+msg = ( _ ( ' Update floating ip failed in SDN - VE : % s ' ) % res ) )
+return updated _ floatingip
+@ _ ha
+def delete _ floatingip ( self , context , id ) :
+LOG . debug ( _ ( `` Delete floatingip in progress : % s `` ) , id )
+super ( SdnvePluginV2 , self ) . delete _ floatingip ( context , id )
+( res , data ) = self . sdnve _ client . sdnve _ delete ( ' floatingip ' , id )
+if res not in constants . HTTP _ ACCEPTABLE :
+LOG . error ( _ ( `` Delete floatingip failed in SDN - VE : % s `` ) , res )

@@ -1,0 +1,4 @@
+etc / neutron / plugins / ibm = etc / neutron / plugins / ibm / sdnve _ neutron _ plugin . ini
+neutron - ibm - agent = neutron . plugins . ibm . agent . sdnve _ neutron _ agent : main
+quantum - ibm - agent = neutron . plugins . ibm . agent . sdnve _ neutron _ agent : main
+ibm = neutron . plugins . ibm . sdnve _ neutron _ plugin : SdnvePluginV2

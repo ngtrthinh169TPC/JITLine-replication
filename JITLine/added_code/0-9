@@ -1,0 +1,2 @@
+def get _ vnc _ console ( self , context , instance ) :
+port = get _ vnc _ port _ for _ instance ( instance . name )

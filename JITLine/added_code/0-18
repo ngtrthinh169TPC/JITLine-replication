@@ -1,0 +1,117 @@
+Copyright 2014 IBM Corp .
+
+All Rights Reserved .
+
+Licensed under the Apache License , Version 2 . 0 ( the `` License `` ) ; you may
+not use this file except in compliance with the License . You may obtain
+a copy of the License at
+
+http : / / www . apache . org / licenses / LICENSE - 2 . 0
+
+Unless required by applicable law or agreed to in writing , software
+distributed under the License is distributed on an `` AS IS `` BASIS , WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND , either express or implied . See the
+License for the specific language governing permissions and limitations
+under the License .
+
+@ author : Mohammad Banikazemi , IBM Corp
+import mock
+from oslo . config import cfg
+from neutron . openstack . common import uuidutils
+from neutron . plugins . ibm . common import constants
+from neutron . plugins . ibm import sdnve _ api
+from neutron . tests import base
+RESOURCE _ PATH = {
+' network ' : `` ln / networks / `` ,
+}
+RESOURCE = ' network '
+HTTP _ OK = 200
+TENANT _ ID = uuidutils . generate _ uuid ( )
+class TestSdnveApi ( base . BaseTestCase ) :
+def setUp ( self ) :
+super ( TestSdnveApi , self ) . setUp ( )
+self . addCleanup ( cfg . CONF . reset )
+class MockKeystoneClient ( object ) :
+def _ _ init _ _ ( self , * * kwargs ) :
+pass
+def get _ tenant _ name ( self , id ) :
+return ' test tenant name '
+with mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' KeystoneClient ' ,
+new = MockKeystoneClient ) :
+self . api = sdnve _ api . Client ( )
+def mock _ do _ request ( self , method , url , body = None , headers = None ,
+params = None , connection _ type = None ) :
+return ( HTTP _ OK , url )
+def mock _ do _ request _ tenant ( self , method , url , body = None , headers = None ,
+params = None , connection _ type = None ) :
+return ( HTTP _ OK , { ' id ' : TENANT _ ID ,
+' network _ type ' : constants . TENANT _ TYPE _ OF } )
+def mock _ do _ request _ no _ tenant ( self , method , url , body = None , headers = None ,
+params = None , connection _ type = None ) :
+return ( None , None )
+def mock _ process _ request ( self , body ) :
+return body
+def test _ sdnve _ api _ list ( self ) :
+with mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' Client . do _ request ' ,
+new = self . mock _ do _ request ) :
+result = self . api . sdnve _ list ( RESOURCE )
+self . assertEqual ( result , ( HTTP _ OK , RESOURCE _ PATH [ RESOURCE ] ) )
+def test _ sdnve _ api _ show ( self ) :
+with mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' Client . do _ request ' ,
+new = self . mock _ do _ request ) :
+result = self . api . sdnve _ show ( RESOURCE , TENANT _ ID )
+self . assertEqual ( result ,
+( HTTP _ OK , RESOURCE _ PATH [ RESOURCE ] + TENANT _ ID ) )
+def test _ sdnve _ api _ create ( self ) :
+with mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' Client . do _ request ' ,
+new = self . mock _ do _ request ) :
+with mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' Client . process _ request ' ,
+new = self . mock _ process _ request ) :
+result = self . api . sdnve _ create ( RESOURCE , ' ' )
+self . assertEqual ( result , ( HTTP _ OK , RESOURCE _ PATH [ RESOURCE ] ) )
+def test _ sdnve _ api _ update ( self ) :
+with mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' Client . do _ request ' ,
+new = self . mock _ do _ request ) :
+with mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' Client . process _ request ' ,
+new = self . mock _ process _ request ) :
+result = self . api . sdnve _ update ( RESOURCE , TENANT _ ID , ' ' )
+self . assertEqual ( result ,
+( HTTP _ OK ,
+RESOURCE _ PATH [ RESOURCE ] + TENANT _ ID ) )
+def test _ sdnve _ api _ delete ( self ) :
+with mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' Client . do _ request ' ,
+new = self . mock _ do _ request ) :
+result = self . api . sdnve _ delete ( RESOURCE , TENANT _ ID )
+self . assertEqual ( result ,
+( HTTP _ OK , RESOURCE _ PATH [ RESOURCE ] + TENANT _ ID ) )
+def test _ sdnve _ get _ tenant _ by _ id ( self ) :
+with mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' Client . do _ request ' ,
+new = self . mock _ do _ request _ tenant ) :
+id = TENANT _ ID
+result = self . api . sdnve _ get _ tenant _ byid ( id )
+self . assertEqual ( result ,
+( TENANT _ ID , constants . TENANT _ TYPE _ OF ) )
+def test _ sdnve _ check _ and _ create _ tenant ( self ) :
+with mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' Client . do _ request ' ,
+new = self . mock _ do _ request _ tenant ) :
+id = TENANT _ ID
+result = self . api . sdnve _ check _ and _ create _ tenant ( id )
+self . assertEqual ( result , TENANT _ ID )
+def test _ sdnve _ check _ and _ create _ tenant _ fail ( self ) :
+with mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' Client . do _ request ' ,
+new = self . mock _ do _ request _ no _ tenant ) :
+id = TENANT _ ID
+result = self . api . sdnve _ check _ and _ create _ tenant (
+id , constants . TENANT _ TYPE _ OF )
+self . assertIsNone ( result )

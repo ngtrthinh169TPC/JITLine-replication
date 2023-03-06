@@ -1,0 +1,90 @@
+Copyright 2014 IBM Corp .
+
+All Rights Reserved .
+
+Licensed under the Apache License , Version 2 . 0 ( the `` License `` ) ; you may
+not use this file except in compliance with the License . You may obtain
+a copy of the License at
+
+http : / / www . apache . org / licenses / LICENSE - 2 . 0
+
+Unless required by applicable law or agreed to in writing , software
+distributed under the License is distributed on an `` AS IS `` BASIS , WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND , either express or implied . See the
+License for the specific language governing permissions and limitations
+under the License .
+
+@ author : Mohammad Banikazemi , IBM Corp
+import contextlib
+import mock
+from neutron . extensions import portbindings
+from neutron . tests . unit import _ test _ extension _ portbindings as test _ bindings
+from neutron . tests . unit import test _ db _ plugin as test _ plugin
+from neutron . tests . unit import test _ l3 _ plugin as test _ l3 _ plugin
+from neutron . plugins . ibm . common import constants
+_ plugin _ name = ( ' neutron . plugins . ibm . '
+' sdnve _ neutron _ plugin . SdnvePluginV2 ' )
+HTTP _ OK = 200
+class MockClient ( object ) :
+def sdnve _ list ( self , resource , * * params ) :
+return ( HTTP _ OK , ' body ' )
+def sdnve _ show ( self , resource , specific , * * params ) :
+return ( HTTP _ OK , ' body ' )
+def sdnve _ create ( self , resource , body ) :
+return ( HTTP _ OK , ' body ' )
+def sdnve _ update ( self , resource , specific , body = None ) :
+return ( HTTP _ OK , ' body ' )
+def sdnve _ delete ( self , resource , specific ) :
+return ( HTTP _ OK , ' body ' )
+def sdnve _ get _ tenant _ byid ( self , os _ tenant _ id ) :
+return ( os _ tenant _ id , constants . TENANT _ TYPE _ OF )
+def sdnve _ check _ and _ create _ tenant (
+self , os _ tenant _ id , network _ type = None ) :
+return os _ tenant _ id
+def sdnve _ get _ controller ( self ) :
+return
+class MockKeystoneClient ( object ) :
+def _ _ init _ _ ( self , * * kwargs ) :
+pass
+def get _ tenant _ type ( self , id ) :
+return constants . TENANT _ TYPE _ OF
+def get _ tenant _ name ( self , id ) :
+return `` tenant name ``
+class IBMPluginV2TestCase ( test _ plugin . NeutronDbPluginV2TestCase ) :
+def setUp ( self ) :
+with contextlib . nested (
+mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' KeystoneClient ' ,
+new = MockKeystoneClient ) ,
+mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' Client ' ,
+new = MockClient ) ) :
+super ( IBMPluginV2TestCase , self ) . setUp ( plugin = _ plugin _ name )
+class TestIBMBasicGet ( test _ plugin . TestBasicGet ,
+IBMPluginV2TestCase ) :
+pass
+class TestIBMV2HTTPResponse ( test _ plugin . TestV2HTTPResponse ,
+IBMPluginV2TestCase ) :
+pass
+class TestIBMNetworksV2 ( test _ plugin . TestNetworksV2 ,
+IBMPluginV2TestCase ) :
+pass
+class TestIBMPortsV2 ( test _ plugin . TestPortsV2 ,
+IBMPluginV2TestCase ) :
+pass
+class TestIBMSubnetsV2 ( test _ plugin . TestSubnetsV2 ,
+IBMPluginV2TestCase ) :
+pass
+class TestIBMPortBinding ( IBMPluginV2TestCase ,
+test _ bindings . PortBindingsTestCase ) :
+VIF _ TYPE = portbindings . VIF _ TYPE _ OVS
+class IBMPluginRouterTestCase ( test _ l3 _ plugin . L3NatDBIntTestCase ) :
+def setUp ( self ) :
+with contextlib . nested (
+mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' KeystoneClient ' ,
+new = MockKeystoneClient ) ,
+mock . patch ( ' neutron . plugins . ibm . sdnve _ api . '
+' Client ' ,
+new = MockClient ) ) :
+super ( IBMPluginRouterTestCase , self ) . setUp ( plugin = _ plugin _ name )

@@ -1,0 +1,16 @@
+instance = self . _ create _ instance ( )
+console = conn . get _ vnc _ console ( instance )
+instance = self . _ create _ instance ( )
+console = conn . get _ vnc _ console ( instance )
+instance = { }
+# set instance name and state
+instance [ ' name ' ] = ' fake - instance '
+instance [ ' uuid ' ] = ' 00000000 - 0000 - 0000 - 0000 - 000000000000 '
+instance [ ' vm _ state ' ] = ' building '
+conn . get _ vnc _ console , instance )
+instance = { }
+instance [ ' name ' ] = ' fake - rescue '
+instance [ ' uuid ' ] = ' 00000000 - 0000 - 0000 - 0000 - 000000000001 '
+instance [ ' vm _ state ' ] = ' rescued '
+conn . get _ vnc _ console , instance )
+def _ create _ instance ( self , instance _ id = 1 , spawn = True ) :
